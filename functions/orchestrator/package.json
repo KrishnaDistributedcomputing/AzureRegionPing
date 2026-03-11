@@ -1,0 +1,22 @@
+{
+  "name": "azureregionping-orchestrator",
+  "version": "0.1.0",
+  "description": "Durable Functions orchestrator for AzureRegionPing",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "start": "func start",
+    "prestart": "npm run build"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "durable-functions": "^3.0.0",
+    "@azure/web-pubsub": "^1.1.3",
+    "applicationinsights": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

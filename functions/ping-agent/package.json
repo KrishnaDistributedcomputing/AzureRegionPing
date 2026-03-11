@@ -1,0 +1,20 @@
+{
+  "name": "azureregionping-agent",
+  "version": "0.1.0",
+  "description": "Lightweight ping agent deployed per Azure region",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "start": "func start",
+    "prestart": "npm run build"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "applicationinsights": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
