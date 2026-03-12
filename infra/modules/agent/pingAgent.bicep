@@ -24,27 +24,47 @@ resource agentStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-// ─── Function App (Consumption plan) ───────────────────────────────
-resource agentPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+// ─── Function App (Flex Consumption plan) ──────────────────────────
+resource agentPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: '${prefix}-ping-${location}-plan'
   location: location
-  sku: { name: 'Y1', tier: 'Dynamic' }
-  kind: 'functionapp'
+  sku: { name: 'FC1', tier: 'FlexConsumption' }
+  kind: 'functionapp,linux'
+  properties: {
+    reserved: true
+  }
 }
 
-resource agentFunc 'Microsoft.Web/sites@2023-12-01' = {
+resource agentFunc 'Microsoft.Web/sites@2024-04-01' = {
   name: '${prefix}-ping-${location}-func'
   location: location
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
   properties: {
     serverFarmId: agentPlan.id
     httpsOnly: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${agentStorage.properties.primaryEndpoints.blob}deploymentpackages'
+          authentication: {
+            type: 'StorageAccountConnectionString'
+            storageAccountConnectionStringName: 'AzureWebJobsStorage'
+          }
+        }
+      }
+      runtime: {
+        name: 'node'
+        version: '20'
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 10
+        instanceMemoryMB: 2048
+      }
+    }
     siteConfig: {
-      nodeVersion: '~20'
       appSettings: [
         { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${agentStorage.name};AccountKey=${agentStorage.listKeys().keys[0].value}' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
         { name: 'AGENT_API_KEY', value: agentApiKey }
         { name: 'REGION_ID', value: location }

@@ -118,26 +118,46 @@ resource containerAggregates 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases
 }
 
 // ─── Orchestrator Function App ─────────────────────────────────────
-resource orchestratorPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+resource orchestratorPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   name: '${prefix}-orch-plan'
   location: location
-  sku: { name: 'Y1', tier: 'Dynamic' }
-  kind: 'functionapp'
+  sku: { name: 'FC1', tier: 'FlexConsumption' }
+  kind: 'functionapp,linux'
+  properties: {
+    reserved: true
+  }
 }
 
-resource orchestratorFunc 'Microsoft.Web/sites@2023-12-01' = {
+resource orchestratorFunc 'Microsoft.Web/sites@2024-04-01' = {
   name: '${prefix}-orch-func'
   location: location
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
   properties: {
     serverFarmId: orchestratorPlan.id
     httpsOnly: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storageAccount.properties.primaryEndpoints.blob}deploymentpackages'
+          authentication: {
+            type: 'StorageAccountConnectionString'
+            storageAccountConnectionStringName: 'AzureWebJobsStorage'
+          }
+        }
+      }
+      runtime: {
+        name: 'node'
+        version: '20'
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 40
+        instanceMemoryMB: 2048
+      }
+    }
     siteConfig: {
-      nodeVersion: '~20'
       appSettings: [
         { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value}' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'node' }
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'AzureSignalRConnectionString', value: signalR.listKeys().primaryConnectionString }
         { name: 'COSMOS_CONNECTION_STRING', value: cosmosAccount.listConnectionStrings().connectionStrings[0].connectionString }
