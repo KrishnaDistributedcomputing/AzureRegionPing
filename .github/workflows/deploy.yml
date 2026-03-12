@@ -46,9 +46,9 @@ jobs:
 
   deploy-agents:
     runs-on: ubuntu-latest
-    needs: deploy-infra
+    needs: deploy-orchestrator
     strategy:
-      max-parallel: 5
+      max-parallel: 1
       matrix:
         region: [eastus, westus2, westeurope, southeastasia, australiaeast]
     steps:
