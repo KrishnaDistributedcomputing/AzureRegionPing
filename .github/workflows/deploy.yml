@@ -12,6 +12,8 @@ env:
 jobs:
   deploy-infra:
     runs-on: ubuntu-latest
+    outputs:
+      env-domain: ${{ steps.get-domain.outputs.domain }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/login@v2
@@ -23,6 +25,11 @@ jobs:
             --location ${{ env.LOCATION }} \
             --template-file infra/main.bicep \
             --parameters environment=dev agentApiKey="${{ secrets.AGENT_API_KEY }}"
+      - name: Get Container Env domain
+        id: get-domain
+        run: |
+          domain=$(az containerapp env show --name arp-dev-env --resource-group ${{ env.RESOURCE_GROUP }} --query "properties.defaultDomain" -o tsv)
+          echo "domain=$domain" >> $GITHUB_OUTPUT
 
   deploy-orchestrator:
     runs-on: ubuntu-latest
@@ -43,14 +50,23 @@ jobs:
             --name arp-dev-orch \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --source functions/orchestrator
+      - name: Set env vars
+        run: |
+          CONTAINER=$(az containerapp show --name arp-dev-orch -g ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[?name!='orchestrator'].name | [0]" -o tsv)
+          [ -z "$CONTAINER" ] && CONTAINER="arp-dev-orch"
+          az containerapp update --name arp-dev-orch -g ${{ env.RESOURCE_GROUP }} \
+            --container-name "$CONTAINER" \
+            --set-env-vars \
+              "AGENT_URL_PATTERN=https://arp-dev-ping-{region}.${{ needs.deploy-infra.outputs.env-domain }}" \
+              "PORT=3000"
 
   deploy-agents:
     runs-on: ubuntu-latest
-    needs: deploy-orchestrator
+    needs: [deploy-infra, deploy-orchestrator]
     strategy:
-      max-parallel: 1
+      max-parallel: 2
       matrix:
-        region: [eastus, westus2, westeurope, southeastasia, australiaeast]
+        region: [eastus, eastus2, westus2, westeurope, southeastasia, australiaeast]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,6 +83,15 @@ jobs:
             --name arp-dev-ping-${{ matrix.region }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --source functions/ping-agent
+      - name: Set env vars
+        run: |
+          CONTAINER=$(az containerapp show --name arp-dev-ping-${{ matrix.region }} -g ${{ env.RESOURCE_GROUP }} --query "properties.template.containers[?name!='ping-agent'].name | [0]" -o tsv)
+          [ -z "$CONTAINER" ] && CONTAINER="arp-dev-ping-${{ matrix.region }}"
+          az containerapp update --name arp-dev-ping-${{ matrix.region }} -g ${{ env.RESOURCE_GROUP }} \
+            --container-name "$CONTAINER" \
+            --set-env-vars \
+              "REGION_ID=${{ matrix.region }}" \
+              "PORT=3000"
 
   deploy-frontend:
     runs-on: ubuntu-latest

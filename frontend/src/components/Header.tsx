@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
 import { usePingStore } from '../store/pingStore';
 import { fetchRegions, startPingTest } from '../services/api';
-import { connectSignalR } from '../services/signalr';
 
 export default function Header() {
-  const { sourceRegion, mode, status, regions, setSourceRegion, setMode, setRegions, startPing, reset } =
+  const { sourceRegion, mode, status, regions, setSourceRegion, setMode, setRegions, startPing, addResult, addArc, completePing, setError, reset } =
     usePingStore();
 
   // Load regions on mount
@@ -28,6 +27,7 @@ export default function Header() {
     if (status === 'testing') return;
 
     reset();
+    startPing('pending');
 
     try {
       const response = await startPingTest({
@@ -36,12 +36,42 @@ export default function Header() {
         samples: 5,
       });
 
-      startPing(response.sessionId);
+      const allRegions = usePingStore.getState().regions;
+      
+      // Process results — add arcs and results for each
+      for (const r of response.results) {
+        const srcRegion = allRegions.find((reg) => reg.id === r.source);
+        const tgtRegion = allRegions.find((reg) => reg.id === r.target);
+        
+        if (srcRegion && tgtRegion) {
+          const color = r.latency ? latencyToColor(r.latency.avg) : '#ef4444';
+          addArc({
+            startLat: srcRegion.lat, startLng: srcRegion.lng,
+            endLat: tgtRegion.lat, endLng: tgtRegion.lng,
+            color, source: r.source, target: r.target,
+            latencyMs: r.latency?.avg, animating: false,
+          });
+        }
 
-      // Connect SignalR for real-time results
-      await connectSignalR(response.sessionId);
+        if (r.latency) {
+          addResult({
+            source: r.source, target: r.target,
+            latency: r.latency, status: r.status as 'ok' | 'timeout' | 'error',
+            timestamp: r.timestamp,
+          });
+        }
+      }
+
+      completePing({
+        regionsOk: response.summary.regionsOk,
+        regionsFailed: response.summary.regionsFailed,
+        fastestPair: response.summary.fastestPair ?? undefined,
+        slowestPair: response.summary.slowestPair ?? undefined,
+        globalAvgMs: response.summary.globalAvgMs,
+      });
     } catch (err) {
       console.error('Failed to start ping:', err);
+      setError();
     }
   };
 
@@ -116,4 +146,11 @@ export default function Header() {
       </div>
     </header>
   );
+}
+
+function latencyToColor(ms: number): string {
+  if (ms < 50) return '#22c55e';
+  if (ms < 150) return '#eab308';
+  if (ms < 250) return '#f97316';
+  return '#ef4444';
 }

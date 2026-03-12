@@ -1,4 +1,5 @@
-const API_BASE = '/api';
+/// <reference types="vite/client" />
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 export interface RegionResponse {
   regions: {
@@ -14,9 +15,23 @@ export interface RegionResponse {
 
 export interface PingStartResponse {
   sessionId: string;
-  orchestrationId: string;
-  statusUrl: string;
-  estimatedDurationMs: number;
+  status: string;
+  durationMs: number;
+  results: {
+    source: string;
+    target: string;
+    latency: { min: number; avg: number; max: number; p50: number; p95: number; jitter: number; stddev: number; samples: number[] } | null;
+    status: string;
+    error?: string;
+    timestamp: string;
+  }[];
+  summary: {
+    regionsOk: number;
+    regionsFailed: number;
+    fastestPair: { source: string; target: string; avgMs: number } | null;
+    slowestPair: { source: string; target: string; avgMs: number } | null;
+    globalAvgMs: number;
+  };
 }
 
 export async function fetchRegions(): Promise<RegionResponse> {
