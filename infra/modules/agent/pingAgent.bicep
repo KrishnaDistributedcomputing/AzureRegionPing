@@ -11,67 +11,65 @@ param appInsightsConnectionString string
 @description('API key for agent authentication')
 param agentApiKey string
 
-// ─── Storage Account (Function state) ──────────────────────────────
-resource agentStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: replace('${prefix}ping${location}', '-', '')
-  location: location
-  kind: 'StorageV2'
-  sku: { name: 'Standard_LRS' }
-  properties: {
-    supportsHttpsTrafficOnly: true
-    minimumTlsVersion: 'TLS1_2'
-    allowBlobPublicAccess: false
-  }
+@description('Location of the Container Apps Environment (core region)')
+param containerEnvLocation string
+
+// Reference the shared Container Apps Environment from core
+resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: '${prefix}-env'
 }
 
-// ─── Function App (Flex Consumption plan) ──────────────────────────
-resource agentPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
-  name: '${prefix}-ping-${location}-plan'
-  location: location
-  sku: { name: 'FC1', tier: 'FlexConsumption' }
-  kind: 'functionapp,linux'
+// ─── Ping Agent Container App ──────────────────────────────────────
+resource agentApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${prefix}-ping-${location}'
+  location: containerEnvLocation
   properties: {
-    reserved: true
-  }
-}
-
-resource agentFunc 'Microsoft.Web/sites@2024-04-01' = {
-  name: '${prefix}-ping-${location}-func'
-  location: location
-  kind: 'functionapp,linux'
-  properties: {
-    serverFarmId: agentPlan.id
-    httpsOnly: true
-    functionAppConfig: {
-      deployment: {
-        storage: {
-          type: 'blobContainer'
-          value: '${agentStorage.properties.primaryEndpoints.blob}deploymentpackages'
-          authentication: {
-            type: 'StorageAccountConnectionString'
-            storageAccountConnectionStringName: 'AzureWebJobsStorage'
-          }
-        }
+    managedEnvironmentId: containerEnv.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 3000
+        transport: 'http'
       }
-      runtime: {
-        name: 'node'
-        version: '20'
-      }
-      scaleAndConcurrency: {
-        maximumInstanceCount: 10
-        instanceMemoryMB: 2048
-      }
-    }
-    siteConfig: {
-      appSettings: [
-        { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${agentStorage.name};AccountKey=${agentStorage.listKeys().keys[0].value}' }
-        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
-        { name: 'AGENT_API_KEY', value: agentApiKey }
-        { name: 'REGION_ID', value: location }
+      secrets: [
+        { name: 'agent-api-key', value: agentApiKey }
+        { name: 'appinsights-connection', value: appInsightsConnectionString }
       ]
     }
+    template: {
+      containers: [
+        {
+          name: 'ping-agent'
+          image: 'mcr.microsoft.com/k8se/quickstart:latest'
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          env: [
+            { name: 'PORT', value: '3000' }
+            { name: 'AGENT_API_KEY', secretRef: 'agent-api-key' }
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection' }
+            { name: 'REGION_ID', value: location }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 3
+        rules: [
+          {
+            name: 'http-scaling'
+            http: {
+              metadata: {
+                concurrentRequests: '20'
+              }
+            }
+          }
+        ]
+      }
+    }
   }
 }
 
-output agentUrl string = 'https://${agentFunc.properties.defaultHostName}'
-output agentName string = agentFunc.name
+output agentUrl string = 'https://${agentApp.properties.configuration.ingress.fqdn}'
+output agentName string = agentApp.name

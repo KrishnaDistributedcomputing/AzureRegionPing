@@ -2,161 +2,89 @@ name: Deploy AzureRegionPing
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
 
 env:
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-  AGENT_API_KEY: ${{ secrets.AGENT_API_KEY }}
+  RESOURCE_GROUP: rg-arp-dev-core
+  LOCATION: eastus2
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # ─── Step 1: Deploy Infrastructure ────────────────────────────
   deploy-infra:
     runs-on: ubuntu-latest
-    outputs:
-      app-insights-conn: ${{ steps.deploy.outputs.appInsightsConnectionString }}
-      orchestrator-url: ${{ steps.deploy.outputs.orchestratorUrl }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
       - name: Deploy Bicep
-        id: deploy
         run: |
           az deployment sub create \
-            --location eastus2 \
+            --location ${{ env.LOCATION }} \
             --template-file infra/main.bicep \
-            --parameters environment=dev agentApiKey=${{ secrets.AGENT_API_KEY }}
+            --parameters environment=dev agentApiKey="${{ secrets.AGENT_API_KEY }}"
 
-  # ─── Step 2: Build & Deploy Frontend ──────────────────────────
-  deploy-frontend:
-    runs-on: ubuntu-latest
-    needs: deploy-infra
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Deploy to Static Web App
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
-          action: upload
-          app_location: frontend
-          output_location: dist
-
-  # ─── Step 3: Build & Deploy Orchestrator ──────────────────────
   deploy-orchestrator:
     runs-on: ubuntu-latest
     needs: deploy-infra
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: functions/orchestrator/package-lock.json
-
-      - name: Build orchestrator
+        with: { node-version: 20 }
+      - name: Build
         working-directory: functions/orchestrator
-        run: |
-          npm ci
-          npm run build
-
+        run: npm ci && npm run build
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Deploy Container App
+        run: |
+          az containerapp up \
+            --name arp-dev-orch \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --source functions/orchestrator
 
-      - name: Deploy orchestrator function
-        uses: Azure/functions-action@v1
-        with:
-          app-name: arp-dev-orch-func
-          package: functions/orchestrator
-
-  # ─── Step 4: Build & Deploy Ping Agents (parallel matrix) ────
   deploy-agents:
     runs-on: ubuntu-latest
     needs: deploy-infra
     strategy:
-      max-parallel: 10
+      max-parallel: 5
       matrix:
-        region:
-          - eastus
-          - eastus2
-          - westus
-          - westus2
-          - westus3
-          - centralus
-          - northcentralus
-          - southcentralus
-          - canadacentral
-          - brazilsouth
-          - northeurope
-          - westeurope
-          - uksouth
-          - francecentral
-          - germanywestcentral
-          - swedencentral
-          - norwayeast
-          - southeastasia
-          - eastasia
-          - japaneast
-          - koreacentral
-          - australiaeast
-          - centralindia
-          - uaenorth
-          - southafricanorth
+        region: [eastus, westus2, westeurope, southeastasia, australiaeast]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: functions/ping-agent/package-lock.json
-
-      - name: Build ping agent
+        with: { node-version: 20 }
+      - name: Build
         working-directory: functions/ping-agent
-        run: |
-          npm ci
-          npm run build
-
+        run: npm ci && npm run build
       - uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Deploy agent
+        run: |
+          az containerapp up \
+            --name arp-dev-ping-${{ matrix.region }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --source functions/ping-agent
 
-      - name: Deploy agent to ${{ matrix.region }}
-        uses: Azure/functions-action@v1
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: deploy-infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Build
+        working-directory: frontend
+        run: npm ci && npm run build
+      - uses: Azure/static-web-apps-deploy@v1
         with:
-          app-name: arp-dev-ping-${{ matrix.region }}-func
-          package: functions/ping-agent
+          azure_static_web_apps_api_token: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
+          action: upload
+          app_location: frontend
+          output_location: dist

@@ -28,19 +28,6 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
-// ─── Storage Account (Orchestrator state) ──────────────────────────
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: replace('${prefix}st', '-', '')
-  location: location
-  kind: 'StorageV2'
-  sku: { name: 'Standard_LRS' }
-  properties: {
-    supportsHttpsTrafficOnly: true
-    minimumTlsVersion: 'TLS1_2'
-    allowBlobPublicAccess: false
-  }
-}
-
 // ─── Azure SignalR Service ─────────────────────────────────────────
 resource signalR 'Microsoft.SignalRService/signalR@2023-08-01-preview' = {
   name: '${prefix}-signalr'
@@ -56,7 +43,7 @@ resource signalR 'Microsoft.SignalRService/signalR@2023-08-01-preview' = {
       { flag: 'EnableConnectivityLogs', value: 'True' }
     ]
     cors: {
-      allowedOrigins: ['*'] // Restrict in prod
+      allowedOrigins: ['*']
     }
   }
 }
@@ -89,7 +76,7 @@ resource containerSessions 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/c
     resource: {
       id: 'sessions'
       partitionKey: { paths: ['/id'], kind: 'Hash' }
-      defaultTtl: 2592000 // 30 days
+      defaultTtl: 2592000
     }
   }
 }
@@ -106,64 +93,78 @@ resource containerResults 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/co
   }
 }
 
-resource containerAggregates 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-02-15-preview' = {
-  parent: cosmosDb
-  name: 'aggregates'
+// ─── Container Apps Environment ────────────────────────────────────
+resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
+  name: '${prefix}-env'
+  location: location
   properties: {
-    resource: {
-      id: 'aggregates'
-      partitionKey: { paths: ['/pairKey'], kind: 'Hash' }
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
+      }
     }
   }
 }
 
-// ─── Orchestrator Function App ─────────────────────────────────────
-resource orchestratorPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
-  name: '${prefix}-orch-plan'
+// ─── Orchestrator Container App ────────────────────────────────────
+resource orchestratorApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${prefix}-orch'
   location: location
-  sku: { name: 'FC1', tier: 'FlexConsumption' }
-  kind: 'functionapp,linux'
   properties: {
-    reserved: true
-  }
-}
-
-resource orchestratorFunc 'Microsoft.Web/sites@2024-04-01' = {
-  name: '${prefix}-orch-func'
-  location: location
-  kind: 'functionapp,linux'
-  properties: {
-    serverFarmId: orchestratorPlan.id
-    httpsOnly: true
-    functionAppConfig: {
-      deployment: {
-        storage: {
-          type: 'blobContainer'
-          value: '${storageAccount.properties.primaryEndpoints.blob}deploymentpackages'
-          authentication: {
-            type: 'StorageAccountConnectionString'
-            storageAccountConnectionStringName: 'AzureWebJobsStorage'
-          }
+    managedEnvironmentId: containerEnv.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 3000
+        transport: 'http'
+        corsPolicy: {
+          allowedOrigins: ['*']
+          allowedMethods: ['GET', 'POST', 'OPTIONS']
+          allowedHeaders: ['*']
         }
       }
-      runtime: {
-        name: 'node'
-        version: '20'
-      }
-      scaleAndConcurrency: {
-        maximumInstanceCount: 40
-        instanceMemoryMB: 2048
-      }
-    }
-    siteConfig: {
-      appSettings: [
-        { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value}' }
-        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-        { name: 'AzureSignalRConnectionString', value: signalR.listKeys().primaryConnectionString }
-        { name: 'COSMOS_CONNECTION_STRING', value: cosmosAccount.listConnectionStrings().connectionStrings[0].connectionString }
-        { name: 'AGENT_API_KEY', value: agentApiKey }
-        { name: 'AGENT_URL_PATTERN', value: 'https://${prefix}-ping-{region}-func.azurewebsites.net' }
+      secrets: [
+        { name: 'agent-api-key', value: agentApiKey }
+        { name: 'cosmos-connection', value: cosmosAccount.listConnectionStrings().connectionStrings[0].connectionString }
+        { name: 'signalr-connection', value: signalR.listKeys().primaryConnectionString }
+        { name: 'appinsights-connection', value: appInsights.properties.ConnectionString }
       ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'orchestrator'
+          image: 'mcr.microsoft.com/k8se/quickstart:latest'
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          env: [
+            { name: 'PORT', value: '3000' }
+            { name: 'AGENT_API_KEY', secretRef: 'agent-api-key' }
+            { name: 'COSMOS_CONNECTION_STRING', secretRef: 'cosmos-connection' }
+            { name: 'SIGNALR_CONNECTION_STRING', secretRef: 'signalr-connection' }
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection' }
+            { name: 'AGENT_URL_PATTERN', value: 'https://${prefix}-ping-{region}.${containerEnv.properties.defaultDomain}' }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 5
+        rules: [
+          {
+            name: 'http-scaling'
+            http: {
+              metadata: {
+                concurrentRequests: '50'
+              }
+            }
+          }
+        ]
+      }
     }
   }
 }
@@ -178,7 +179,10 @@ resource staticWebApp 'Microsoft.Web/staticSites@2023-12-01' = {
 
 // ─── Outputs ───────────────────────────────────────────────────────
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
-output orchestratorUrl string = 'https://${orchestratorFunc.properties.defaultHostName}'
+output orchestratorUrl string = 'https://${orchestratorApp.properties.configuration.ingress.fqdn}'
+output orchestratorAppName string = orchestratorApp.name
 output signalREndpoint string = 'https://${signalR.properties.hostName}'
 output cosmosEndpoint string = cosmosAccount.properties.documentEndpoint
 output staticWebAppUrl string = 'https://${staticWebApp.properties.defaultHostname}'
+output containerEnvId string = containerEnv.id
+output containerEnvDomain string = containerEnv.properties.defaultDomain

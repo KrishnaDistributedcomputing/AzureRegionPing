@@ -11,29 +11,10 @@ param environment string = 'dev'
 param pingRegions array = [
   'eastus'
   'eastus2'
-  'westus'
   'westus2'
-  'westus3'
-  'centralus'
-  'northcentralus'
-  'southcentralus'
-  'canadacentral'
-  'brazilsouth'
-  'northeurope'
   'westeurope'
-  'uksouth'
-  'francecentral'
-  'germanywestcentral'
-  'swedencentral'
-  'norwayeast'
   'southeastasia'
-  'eastasia'
-  'japaneast'
-  'koreacentral'
   'australiaeast'
-  'centralindia'
-  'uaenorth'
-  'southafricanorth'
 ]
 
 @secure()
@@ -48,7 +29,7 @@ resource rgCore 'Microsoft.Resources/resourceGroups@2023-07-01' = {
   location: location
 }
 
-// Deploy core resources
+// Deploy core resources (Container Apps Env, Cosmos, SignalR, Orchestrator, SWA)
 module core 'modules/core/main.bicep' = {
   name: 'deploy-core'
   scope: rgCore
@@ -59,7 +40,7 @@ module core 'modules/core/main.bicep' = {
   }
 }
 
-// Deploy ping agents to each region
+// Deploy ping agents as Container Apps in each region
 module pingAgents 'modules/agent/pingAgent.bicep' = [for region in pingRegions: {
   name: 'deploy-agent-${region}'
   scope: rgCore
@@ -68,5 +49,6 @@ module pingAgents 'modules/agent/pingAgent.bicep' = [for region in pingRegions: 
     prefix: prefix
     appInsightsConnectionString: core.outputs.appInsightsConnectionString
     agentApiKey: agentApiKey
+    containerEnvLocation: location
   }
 }]
